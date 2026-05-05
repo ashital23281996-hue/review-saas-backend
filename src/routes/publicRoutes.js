@@ -166,8 +166,8 @@ router.get('/expand/metadata', async (req, res) => {
     let browser;
 
     try {
-        // Force Playwright to look for browsers in node_modules (where we installed them during build)
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+        // Force Playwright to look for browsers in Render's persistent cache folder
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/project/.cache/playwright';
         
         const { chromium } = await import('playwright');
         if (!url) return res.status(400).json({ error: 'URL is required' });
