@@ -1,11 +1,11 @@
 import express from 'express';
-import { requireAuth } from '@clerk/express';
+import { requireAuth } from '../middleware/auth.js';
 import prisma from '../config/db.js';
 
 const router = express.Router();
 
 // GET all tags with pagination and optional category filter
-router.get('/', requireAuth(), async (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
@@ -51,7 +51,7 @@ router.get('/', requireAuth(), async (req, res) => {
 });
 
 // POST new tag
-router.post('/', requireAuth(), async (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
     try {
         const { category, tag, icon, language } = req.body;
         if (!category || !tag) return res.status(400).json({ error: 'Category and Tag are required' });
@@ -70,7 +70,7 @@ router.post('/', requireAuth(), async (req, res) => {
 });
 
 // POST bulk create tags
-router.post('/bulk', requireAuth(), async (req, res) => {
+router.post('/bulk', requireAuth, async (req, res) => {
     try {
         const { tags } = req.body; // Array of { category, tag, icon }
         if (!Array.isArray(tags) || tags.length === 0) {
@@ -90,7 +90,7 @@ router.post('/bulk', requireAuth(), async (req, res) => {
 });
 
 // PUT update tag
-router.put('/:id', requireAuth(), async (req, res) => {
+router.put('/:id', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { category, tag, icon, language } = req.body;
@@ -107,7 +107,7 @@ router.put('/:id', requireAuth(), async (req, res) => {
 });
 
 // DELETE tag
-router.delete('/:id', requireAuth(), async (req, res) => {
+router.delete('/:id', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         await prisma.industryTag.delete({
