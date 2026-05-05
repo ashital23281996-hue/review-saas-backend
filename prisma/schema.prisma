@@ -1,0 +1,73 @@
+// schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 1. The Business Owners
+model User {
+  id           String     @id @default(uuid(7))
+  clerkId      String     @unique
+  email        String     @unique
+  createdAt    DateTime   @default(now())
+  
+  // Relation: One User can have multiple Businesses
+  businesses   Business[] 
+}
+
+// 2. The Business Profiles
+model Business {
+  id            String      @id @default(uuid(7))
+  userId        String
+  businessName  String
+  category      String      @default("Restaurant") // e.g., 'Restaurant', 'Hotel', 'Retail'
+  googlePlaceId String      @unique
+  googleMapsUrl String?     // Direct link to the Google Maps review tab
+  logoUrl       String?     // URL to the business logo
+  coverImageUrl String?     // Large cover image for the landing page
+  shortCode     String      @unique // e.g., 'cafe123'
+  qrCodeUrl     String?     // URL to the ImageKit hosted QR code
+  reviewTone    String      @default("Professional") // Professional, Casual, Friendly, Funny
+  createdAt     DateTime    @default(now())
+  
+  // Caching Fields for AI Optimization
+  cachedTags    Json?
+  tagsLang      String?
+
+  // Relations
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scanEvents    ScanEvent[]
+
+  @@index([shortCode]) // Critical for fast lookups during redirects
+}
+
+// 3. The Analytics Engine
+model ScanEvent {
+  id         String   @id @default(uuid(7))
+  businessId String
+  scannedAt  DateTime @default(now())
+  userAgent  String?  
+  deviceType String?  // Mobile, Tablet, Desktop
+  os         String?  // iOS, Android, Windows, Mac
+  browser    String?  // Chrome, Safari, Firefox
+  ipHash     String?  
+
+  // Relations
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+// 4. Predefined Industry Tags (Replaces AI Tag Generation)
+model IndustryTag {
+  id       String @id @default(uuid(7))
+  category String // e.g., "Restaurant", "Hotel", "Retail"
+  tag      String // e.g., "Great Food", "Clean Room", "Fast Checkout"
+  icon     String? // Emoji or icon code
+  language String @default("English")
+
+  @@unique([category, tag, language])
+  @@index([category, language])
+}

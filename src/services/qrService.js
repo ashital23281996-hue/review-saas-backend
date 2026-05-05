@@ -1,0 +1,82 @@
+import ImageKit from 'imagekit';
+import QRCode from 'qrcode';
+import sharp from 'sharp';
+import dotenv from 'dotenv';
+dotenv.config();
+
+const imagekit = new ImageKit({
+    publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
+    privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
+    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT
+});
+
+/**
+ * Generates a branded QR code with a logo and uploads it to ImageKit
+ * @param {string} shortCode The unique business code
+ * @param {string} logoUrl Optional URL of the logo to embed
+ * @returns {Promise<string>} The URL of the uploaded image
+ */
+export const generateAndUploadQR = async (shortCode, logoUrl = null) => {
+    try {
+        const redirectUrl = `http://localhost:5001/r/${shortCode}`;
+        const SIZE = 1024; // High res for print
+        const LOGO_SIZE = 250;
+
+        // 1. Generate the base QR Code as a PNG buffer
+        const qrBuffer = await QRCode.toBuffer(redirectUrl, {
+            errorCorrectionLevel: 'H',
+            margin: 2,
+            width: SIZE,
+            color: {
+                dark: '#000000',
+                light: '#ffffff'
+            }
+        });
+
+        let finalBuffer = qrBuffer;
+
+        // 2. If a logo is provided, merge it using sharp
+        if (logoUrl) {
+            try {
+                // Fetch the logo image
+                const logoResponse = await fetch(logoUrl);
+                const logoArrayBuffer = await logoResponse.arrayBuffer();
+                const logoBuffer = Buffer.from(logoArrayBuffer);
+
+                // Process logo: Resize and add a white background circle/square
+                const processedLogo = await sharp(logoBuffer)
+                    .resize(LOGO_SIZE, LOGO_SIZE, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
+                    .extend({
+                        top: 20, bottom: 20, left: 20, right: 20,
+                        background: { r: 255, g: 255, b: 255, alpha: 1 }
+                    })
+                    .toBuffer();
+
+                // Composite the logo onto the center of the QR code
+                finalBuffer = await sharp(qrBuffer)
+                    .composite([{
+                        input: processedLogo,
+                        gravity: 'center'
+                    }])
+                    .toBuffer();
+            } catch (logoError) {
+                console.error('Error processing logo, falling back to plain QR:', logoError);
+                // Fallback to qrBuffer is already handled by initial value
+            }
+        }
+
+        // 3. Upload to ImageKit
+        const uploadResponse = await imagekit.upload({
+            file: finalBuffer,
+            fileName: `qr_${shortCode}.png`,
+            folder: '/qrcodes/',
+            useUniqueFileName: true,
+            tags: ['qr_code', shortCode]
+        });
+
+        return uploadResponse.url;
+    } catch (error) {
+        console.error('Error in generateAndUploadQR:', error);
+        throw new Error('Failed to generate or upload branded QR code');
+    }
+};
