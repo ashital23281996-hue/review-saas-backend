@@ -11,7 +11,6 @@ const reviewRateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many review requests. Please try again after 15 minutes.' },
-    keyGenerator: (req) => req.ip, // rate-limit by IP
 });
 
 const router = express.Router();
