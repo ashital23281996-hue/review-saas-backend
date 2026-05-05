@@ -11,7 +11,8 @@ pnpm exec prisma generate
 # Install Playwright Chromium Browser (using Render's recommended cache path)
 echo "--- Installing Playwright Browser ---"
 export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.cache/playwright
-npx playwright install chromium
+mkdir -p $PLAYWRIGHT_BROWSERS_PATH
+pnpm dlx playwright install chromium
 
 # Verify the executable exists
 echo "--- Verifying Playwright Installation ---"
