@@ -11,6 +11,7 @@ const reviewRateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many review requests. Please try again after 15 minutes.' },
+    validate: false, // Disable strict IPv6 validation for Express 5 compatibility
 });
 
 const router = express.Router();
