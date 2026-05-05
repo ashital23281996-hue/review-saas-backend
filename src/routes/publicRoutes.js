@@ -77,10 +77,9 @@ router.get('/tags/:shortCode', async (req, res) => {
         // Randomize tags for variety
         const shuffledTags = tags.sort(() => 0.5 - Math.random());
 
-        // Select a random number of tags to show: 6, 8, 10, or 12
-        const possibleCounts = [6, 8, 10, 12];
+        // Select a randomized number of tags: 6, 9, or 12
+        const possibleCounts = [6, 9, 12];
         const randomCount = possibleCounts[Math.floor(Math.random() * possibleCounts.length)];
-
         res.json({ tags: shuffledTags.slice(0, randomCount) });
     } catch (error) {
         console.error("[PublicAPI] Error fetching tags:", error);
