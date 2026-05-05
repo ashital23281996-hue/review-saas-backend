@@ -9,5 +9,10 @@ pnpm install
 pnpm exec prisma generate
 
 # Install Playwright Chromium Browser (forced to local directory)
+echo "--- Installing Playwright Browser ---"
 export PLAYWRIGHT_BROWSERS_PATH=0
-pnpm exec playwright install chromium
+npx playwright install chromium
+
+# Verify the executable exists
+echo "--- Verifying Playwright Installation ---"
+find node_modules/playwright-core -name "chrome-headless-shell" || echo "WARNING: Browser not found in node_modules"
