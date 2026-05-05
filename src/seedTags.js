@@ -786,7 +786,6 @@ const predefinedTags = [
 
 async function main() {
   console.log('Seeding massive multi-language tag library...');
-  let count = 0;
   
   const categoryMap = {
     "food_and_dining": "Restaurant",
@@ -804,49 +803,39 @@ async function main() {
 
   const tagData = predefinedTags[0];
   
+  // Build a flat list of all upsert operations first
+  const operations = [];
   for (const [rawCategory, tags] of Object.entries(tagData)) {
     const category = categoryMap[rawCategory] || rawCategory.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     
     for (const t of tags) {
-      // 1. English
-      if (t.en) {
-        try {
-          await prisma.industryTag.upsert({
-            where: { category_tag_language: { category, tag: t.en, language: "English" } },
-            update: { icon: t.icon },
-            create: { category, tag: t.en, icon: t.icon, language: "English" }
-          });
-          count++;
-        } catch(e) { console.error(e); }
-      }
-      
-      // 2. Hindi
-      if (t.hi) {
-        try {
-          await prisma.industryTag.upsert({
-            where: { category_tag_language: { category, tag: t.hi, language: "Hindi" } },
-            update: { icon: t.icon },
-            create: { category, tag: t.hi, icon: t.icon, language: "Hindi" }
-          });
-          count++;
-        } catch(e) { console.error(e); }
-      }
-      
-      // 3. Pahadi
-      if (t.pa) {
-        try {
-          await prisma.industryTag.upsert({
-            where: { category_tag_language: { category, tag: t.pa, language: "Pahadi" } },
-            update: { icon: t.icon },
-            create: { category, tag: t.pa, icon: t.icon, language: "Pahadi" }
-          });
-          count++;
-        } catch(e) { console.error(e); }
-      }
+      if (t.en) operations.push({ category, tag: t.en, icon: t.icon, language: "English" });
+      if (t.hi) operations.push({ category, tag: t.hi, icon: t.icon, language: "Hindi" });
+      if (t.pa) operations.push({ category, tag: t.pa, icon: t.icon, language: "Pahadi" });
     }
   }
   
-  console.log(`Seeding complete. Inserted/Updated ${count} tags across multiple languages.`);
+  console.log(`Prepared ${operations.length} tag operations. Seeding in batches of 20...`);
+
+  // Process in batches of 20 concurrent upserts
+  const BATCH_SIZE = 20;
+  let done = 0;
+  for (let i = 0; i < operations.length; i += BATCH_SIZE) {
+    const batch = operations.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map(op =>
+      prisma.industryTag.upsert({
+        where: { category_tag_language: { category: op.category, tag: op.tag, language: op.language } },
+        update: { icon: op.icon },
+        create: { category: op.category, tag: op.tag, icon: op.icon, language: op.language }
+      }).catch(e => console.error(`Failed: ${op.tag}`, e.message))
+    ));
+    done += batch.length;
+    if (done % 100 === 0 || done === operations.length) {
+      console.log(`  Progress: ${done}/${operations.length}`);
+    }
+  }
+  
+  console.log(`Seeding complete. Processed ${operations.length} tags across multiple languages.`);
 }
 
 main()
