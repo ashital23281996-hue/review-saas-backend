@@ -15,8 +15,13 @@ export const createBusiness = async (req, res) => {
         // Auto-sync user to ensure they exist in local DB
         const user = await syncUser(userId, email);
 
-        // Generate a unique 6-character shortCode in the backend
-        const shortCode = crypto.randomBytes(3).toString('hex').toLowerCase();
+        // Generate a secure combination of UUID and randomized business name tokens
+        const namePool = businessName.toLowerCase().replace(/[^a-z]/g, '');
+        const nameToken = namePool.length > 0 
+            ? Array.from({ length: 4 }, () => namePool[Math.floor(Math.random() * namePool.length)]).join('')
+            : crypto.randomBytes(2).toString('hex');
+        
+        const shortCode = `${crypto.randomUUID()}-${nameToken}`;
 
         // Generate and upload QR code to ImageKit (with optional logo)
         const qrCodeUrl = await generateAndUploadQR(shortCode, logoUrl);
