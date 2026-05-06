@@ -16,6 +16,9 @@ router.get('/my', businessController.getMyBusinesses);
 // Get detailed analytics for a business
 router.get('/:id/analytics', businessController.getBusinessAnalytics);
 
+// Generate high-res marketing flyer
+router.get('/:id/qr/flyer', businessController.getMarketingFlyer);
+
 // Base route for other operations
 router.get('/', businessController.getMyBusinesses);
 

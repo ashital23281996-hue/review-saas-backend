@@ -16,6 +16,86 @@ const imagekit = new ImageKit({
  * @param {string} logoUrl Optional URL of the logo to embed
  * @returns {Promise<string>} The URL of the uploaded image
  */
+/**
+ * Generates a high-quality marketing flyer (Portrait) with Logo, Name, and QR
+ * Optimized for counter stands and printing.
+ */
+export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
+    try {
+        const WIDTH = 1200;
+        const HEIGHT = 1800;
+        const BG_COLOR = { r: 255, g: 255, b: 255, alpha: 1 };
+
+        // 1. Fetch Logo and QR
+        const [logoRes, qrRes] = await Promise.all([
+            logoUrl ? fetch(logoUrl).then(r => r.arrayBuffer()) : null,
+            fetch(qrUrl).then(r => r.arrayBuffer())
+        ]);
+
+        const qrBuffer = Buffer.from(qrRes);
+        const logoBuffer = logoRes ? Buffer.from(logoRes) : null;
+
+        // 2. Create the Background Canvas
+        let flyer = sharp({
+            create: {
+                width: WIDTH,
+                height: HEIGHT,
+                channels: 4,
+                background: BG_COLOR
+            }
+        });
+
+        // 3. Prepare Components
+        const composites = [];
+
+        // A. Logo (Top Center)
+        if (logoBuffer) {
+            const processedLogo = await sharp(logoBuffer)
+                .resize(350, 350, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 0 } })
+                .toBuffer();
+            composites.push({ input: processedLogo, top: 150, left: (WIDTH - 350) / 2 });
+        }
+
+        // B. Text Header (Using SVG for sharp text)
+        const nameSvg = `
+            <svg width="${WIDTH}" height="200">
+                <style>
+                    .title { fill: #000; font-size: 80px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; letter-spacing: -2px; }
+                    .subtitle { fill: #666; font-size: 40px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 4px; }
+                </style>
+                <text x="50%" y="80" text-anchor="middle" class="title">${businessName}</text>
+                <text x="50%" y="150" text-anchor="middle" class="subtitle">Help us grow with a review!</text>
+            </svg>
+        `;
+        composites.push({ input: Buffer.from(nameSvg), top: logoBuffer ? 550 : 300, left: 0 });
+
+        // C. QR Code (Center)
+        const processedQr = await sharp(qrBuffer)
+            .resize(700, 700)
+            .toBuffer();
+        composites.push({ input: processedQr, top: logoBuffer ? 850 : 600, left: (WIDTH - 700) / 2 });
+
+        // D. Footer Instruction
+        const footerSvg = `
+            <svg width="${WIDTH}" height="150">
+                <style>
+                    .instruction { fill: #000; font-size: 35px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; }
+                    .brand { fill: #999; font-size: 20px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 2px; }
+                </style>
+                <text x="50%" y="50" text-anchor="middle" class="instruction">Scan with your camera</text>
+                <text x="50%" y="100" text-anchor="middle" class="brand">Powered by AI Google Review</text>
+            </svg>
+        `;
+        composites.push({ input: Buffer.from(footerSvg), top: HEIGHT - 200, left: 0 });
+
+        // 4. Build Final Flyer
+        return await flyer.composite(composites).png().toBuffer();
+    } catch (error) {
+        console.error('Error generating marketing flyer:', error);
+        throw error;
+    }
+};
+
 export const generateAndUploadQR = async (shortCode, logoUrl = null) => {
     try {
         const redirectUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/review/${shortCode}`;

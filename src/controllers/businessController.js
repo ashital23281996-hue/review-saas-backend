@@ -1,6 +1,6 @@
 import prisma from '../config/db.js';
 import { syncUser } from '../services/authService.js';
-import { generateAndUploadQR } from '../services/qrService.js';
+import { generateAndUploadQR, generateMarketingFlyer } from '../services/qrService.js';
 import crypto from 'crypto';
 
 export const createBusiness = async (req, res) => {
@@ -107,6 +107,30 @@ export const getBusinessAnalytics = async (req, res) => {
         });
 
         res.status(200).json({ business, stats });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * Generates and serves a marketing flyer (QR Stand)
+ */
+export const getMarketingFlyer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const business = await prisma.business.findUnique({ where: { id } });
+
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+
+        const flyerBuffer = await generateMarketingFlyer(
+            business.businessName,
+            business.logoUrl,
+            business.qrCodeUrl
+        );
+
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Content-Disposition', `attachment; filename="${business.businessName.replace(/\s+/g, '-').toLowerCase()}-marketing-flyer.png"`);
+        res.send(flyerBuffer);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
