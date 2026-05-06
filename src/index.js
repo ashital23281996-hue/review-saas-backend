@@ -9,6 +9,7 @@ import businessRoutes from './routes/businessRoutes.js';
 import redirectRoutes from './routes/redirectRoutes.js';
 import publicRoutes from './routes/publicRoutes.js';
 import tagRoutes from './routes/tagRoutes.js';
+import leadRoutes from './routes/leadRoutes.js';
 
 // Debug: Check environment variables
 console.log('--- Server Startup ---');
@@ -28,7 +29,8 @@ app.use(express.json());
 app.use(clerkMiddleware());
 
 // 2. PUBLIC ROUTES
-app.use('/api/public', publicRoutes); 
+app.use('/api/public', publicRoutes);
+app.use('/api/leads', leadRoutes);
 
 // Global Request Logger
 app.use((req, res, next) => {
@@ -40,11 +42,16 @@ app.use((req, res, next) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/businesses', businessRoutes);
 app.use('/api/tags', tagRoutes);
-app.use('/r', redirectRoutes); 
+app.use('/r', redirectRoutes);
 
-// Health check
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'OK' });
+// API Status & Health Check
+app.get('/', (req, res) => {
+    res.status(200).json({ 
+        status: 'Operational', 
+        project: 'ReviewStack AI',
+        message: 'ReviewStack AI Backend API is running smoothly.',
+        timestamp: new Date().toISOString()
+    });
 });
 
 const PORT = process.env.PORT || 5001;

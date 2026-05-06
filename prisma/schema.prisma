@@ -71,3 +71,13 @@ model IndustryTag {
   @@unique([category, tag, language])
   @@index([category, language])
 }
+
+// 5. Landing Page Leads
+model Lead {
+  id        String   @id @default(uuid(7))
+  email     String?
+  phone     String?
+  status    String   @default("New") // New, Contacted, Followed Up, Closed
+  source    String   @default("Landing Page")
+  createdAt DateTime @default(now())
+}
