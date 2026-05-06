@@ -4,15 +4,6 @@ import rateLimit from 'express-rate-limit';
 import prisma from '../config/db.js';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 
-// Rate limiter for AI review generation — max 5 requests per 15 min per IP
-const reviewRateLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Too many review requests. Please try again after 15 minutes.' },
-    validate: false, // Disable strict IPv6 validation for Express 5 compatibility
-});
 
 const router = express.Router();
 console.log('--- PUBLIC ROUTER INITIALIZING ---');
@@ -87,47 +78,61 @@ router.get('/tags/:shortCode', async (req, res) => {
     }
 });
 
+// Strict rate limiter for AI generation to protect API costs and keys
+const reviewRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // Limit each IP to 5 requests per window
+    message: { error: 'Too many reviews generated. Please try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 router.post('/review', reviewRateLimiter, async (req, res) => {
     try {
         const { shortCode, tags, language } = req.body;
         const lang = language || 'English';
-        console.log(`[PublicAPI] Review Gen: ${shortCode} (${lang})`);
+
+        if (!shortCode || !tags || !Array.isArray(tags)) {
+            return res.status(400).json({ error: 'Missing shortCode or tags' });
+        }
 
         const business = await prisma.business.findFirst({ where: { shortCode } });
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        // const prompt = `Write a 2-sentence Google review for "${business.businessName}". 
-        // CRITICAL: The entire review MUST be written in the ${lang} language. 
-        // If the language is Pahadi, use the Devanagari script.
-        // Highlights to include: ${tags.join(', ')}. 
-        // Tone: Friendly. No hashtags.`;
-
+        // Enhanced AI Prompt with Category-Specific Awareness
         const prompt = `
-            TASK: Write a casual, raw Google Maps review for "${business.businessName}".
-            PERSONA: You are a local customer from Himachal Pradesh. You are NOT an AI. You are a real person who just finished using this service/product.
+            TASK: Write a casual, raw Google Maps review for "${business.businessName}", which is a ${business.category || 'local business'}.
+            PERSONA: You are a real customer. You are NOT an AI. You are a local person who just visited this ${business.category || 'place'}.
 
             CRITICAL HUMAN BEHAVIOR RULES:
-            1. NO "ROBOT" OPENINGS: Never start with formal openings.
-            2. START WITH THE FEELING: Start immediately with the best part.
-            3. IMPERFECT STRUCTURE: Use 1-2 short, punchy sentences.
-            4. LANGUAGE & SCRIPT (STRICT RULE): The language requested is ${lang}. 
-            - If ${lang} is Hindi or Pahadi, you MUST write the ENTIRE review in the DEVANAGARI script (e.g., "सही काम है", "बड़ा मजा आया", "काफी सही जगह"). Do NOT use Latin/English letters for Hindi.
-            - If ${lang} is English, use "Indian English" style (e.g., "Superb service", "Value for money").
-            5. MUST INTEGRATE THESE TAGS: You MUST include the concepts of ALL the following tags in your review: ${tags.join(', ')}. Do not invent random features (like a sea view) that are not in the tags.
-            6. NO CORPORATE JARGON: Write exactly like a casual local customer on their phone.
+            1. NO ROBOT OPENINGS: Never start with "I recently visited" or "Highly recommend". Start with the direct experience.
+            2. EMOTIONAL START: Start with a feeling (e.g., "Maza aa gaya", "Truly authentic", "Super fast service").
+            3. IMPERFECT & PUNCHY: Use 1-2 short, human-like sentences. Avoid perfect grammar.
+            4. LANGUAGE & SCRIPT (STRICT):
+               - Requested Language: ${lang}
+               - If Hindi or Pahadi: Use DEVANAGARI script ONLY. No English letters. (e.g. "बढ़िया सर्विस है")
+               - If English: Use casual, conversational Indian-English style.
+            5. TAG INTEGRATION: You MUST naturally weave in these specific concepts: ${tags.join(', ')}. 
+            6. NO JARGON: Write like a person texting a friend. 
             
-            GOAL: Write exactly 2-3 short, natural sentences incorporating the requested tags in the requested script.
+            GOAL: Write exactly 15-25 words. No hashtags. No quotes.
         `;
 
-        const review = await callGemini(process.env.GEMINI_API_KEY, prompt, 0.8, "gemini-2.5-flash-lite");
+        const review = await callGemini(process.env.GEMINI_API_KEY, prompt, 0.9, "gemini-2.5-flash");
+
+        if (review) {
+            console.log(`[ReviewGen] Generated for ${business.businessName} (${lang}): ${review.substring(0, 30)}...`);
+        }
+
         res.json({ review: review || "Great experience! Highly recommend." });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[ReviewGen] Error:', error);
+        res.status(500).json({ error: 'Failed to generate review. Please try again.' });
     }
 });
 
 /**
- * Professional AI Caller (Official SDK)
+ * Professional AI Caller with Retry Logic for High Demand
  */
 async function callGemini(apiKey, prompt, temperature = 0.7, modelName = "gemini-2.5-flash", schema = null) {
     if (!apiKey) {
@@ -135,26 +140,43 @@ async function callGemini(apiKey, prompt, temperature = 0.7, modelName = "gemini
         return null;
     }
 
-    try {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({
-            model: modelName,
-            generationConfig: {
-                temperature,
-                ...(schema && { responseMimeType: "application/json", responseSchema: schema })
+    let attempts = 0;
+    const maxAttempts = 3;
+    const baseDelay = 2000; // 2 seconds
+
+    while (attempts < maxAttempts) {
+        try {
+            const genAI = new GoogleGenerativeAI(apiKey);
+            const model = genAI.getGenerativeModel({
+                model: modelName,
+                generationConfig: {
+                    temperature,
+                    ...(schema && { responseMimeType: "application/json", responseSchema: schema })
+                }
+            });
+
+            const result = await model.generateContent({
+                contents: [{ role: "user", parts: [{ text: prompt }] }]
+            });
+
+            const response = await result.response;
+            return response.text();
+        } catch (e) {
+            attempts++;
+            const isServiceUnavailable = e.message.includes("503") || e.message.includes("Service Unavailable") || e.message.includes("high demand");
+            
+            if (isServiceUnavailable && attempts < maxAttempts) {
+                const delay = baseDelay * Math.pow(2, attempts - 1);
+                console.warn(`[Gemini] High demand (503). Retrying in ${delay}ms... (Attempt ${attempts}/${maxAttempts})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
             }
-        });
 
-        const result = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: prompt }] }]
-        });
-
-        const response = await result.response;
-        return response.text();
-    } catch (e) {
-        console.error(`[Gemini] SDK ERROR:`, e.message);
-        return null;
+            console.error(`[Gemini] SDK ERROR (Attempt ${attempts}):`, e.message);
+            if (attempts >= maxAttempts) return null;
+        }
     }
+    return null;
 }
 
 /**
@@ -169,7 +191,7 @@ router.get('/expand/metadata', async (req, res) => {
         if (process.env.RENDER) {
             process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/project/.cache/playwright';
         }
-        
+
         const { chromium } = await import('playwright');
         if (!url) return res.status(400).json({ error: 'URL is required' });
 
