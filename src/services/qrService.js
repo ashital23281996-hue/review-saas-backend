@@ -43,14 +43,26 @@ export const generateAndUploadQR = async (shortCode, logoUrl = null) => {
                 const logoArrayBuffer = await logoResponse.arrayBuffer();
                 const logoBuffer = Buffer.from(logoArrayBuffer);
 
-                // Process logo: Resize and add a white background circle/square
-                const processedLogo = await sharp(logoBuffer)
-                    .resize(LOGO_SIZE, LOGO_SIZE, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
-                    .extend({
-                        top: 20, bottom: 20, left: 20, right: 20,
-                        background: { r: 255, g: 255, b: 255, alpha: 1 }
-                    })
+                // Process logo: Resize and add a solid white circular mask/background
+                // This ensures the QR pixels don't bleed into the logo
+                const logoResize = await sharp(logoBuffer)
+                    .resize(LOGO_SIZE - 40, LOGO_SIZE - 40, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 0 } })
                     .toBuffer();
+
+                const processedLogo = await sharp({
+                    create: {
+                        width: LOGO_SIZE,
+                        height: LOGO_SIZE,
+                        channels: 4,
+                        background: { r: 255, g: 255, b: 255, alpha: 1 }
+                    }
+                })
+                .composite([{
+                    input: logoResize,
+                    gravity: 'center'
+                }])
+                .png()
+                .toBuffer();
 
                 // Composite the logo onto the center of the QR code
                 finalBuffer = await sharp(qrBuffer)
