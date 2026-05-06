@@ -20,20 +20,26 @@ const imagekit = new ImageKit({
  * Generates a high-quality marketing flyer (Portrait) with Logo, Name, and QR
  * Optimized for counter stands and printing.
  */
+/**
+ * Generates a high-quality marketing flyer (Portrait) with Logo, Name, and QR
+ * Optimized for counter stands and printing.
+ */
 export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
     try {
         const WIDTH = 1200;
-        const HEIGHT = 1800;
+        const HEIGHT = 2400; // Increased height to prevent overlap
         const BG_COLOR = { r: 255, g: 255, b: 255, alpha: 1 };
 
-        // 1. Fetch Logo and QR
-        const [logoRes, qrRes] = await Promise.all([
-            logoUrl ? fetch(logoUrl).then(r => r.arrayBuffer()) : null,
-            fetch(qrUrl).then(r => r.arrayBuffer())
+        // 1. Fetch Logo and QR with better error handling
+        const [logoRes, qrRes] = await Promise.allSettled([
+            logoUrl ? fetch(logoUrl).then(r => r.ok ? r.arrayBuffer() : null) : Promise.resolve(null),
+            fetch(qrUrl).then(r => r.ok ? r.arrayBuffer() : null)
         ]);
 
-        const qrBuffer = Buffer.from(qrRes);
-        const logoBuffer = logoRes ? Buffer.from(logoRes) : null;
+        const logoBuffer = logoRes.status === 'fulfilled' && logoRes.value ? Buffer.from(logoRes.value) : null;
+        const qrBuffer = qrRes.status === 'fulfilled' && qrRes.value ? Buffer.from(qrRes.value) : null;
+
+        if (!qrBuffer) throw new Error("Could not fetch QR code image.");
 
         // 2. Create the Background Canvas
         let flyer = sharp({
@@ -49,44 +55,74 @@ export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
         const composites = [];
 
         // A. Logo (Top Center)
+        let logoBottom = 150;
         if (logoBuffer) {
-            const processedLogo = await sharp(logoBuffer)
-                .resize(350, 350, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 0 } })
-                .toBuffer();
-            composites.push({ input: processedLogo, top: 150, left: (WIDTH - 350) / 2 });
+            try {
+                const processedLogo = await sharp(logoBuffer)
+                    .resize(450, 450, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 0 } })
+                    .toBuffer();
+                composites.push({ input: processedLogo, top: 150, left: (WIDTH - 450) / 2 });
+                logoBottom = 650;
+            } catch (e) {
+                console.warn("[Flyer] Failed to process logo, skipping...");
+            }
         }
 
-        // B. Text Header (Using SVG for sharp text)
+        // B. Business Name (Robust SVG Multi-line)
+        const displayTitle = businessName.toUpperCase();
+        const titleFontSize = displayTitle.length > 30 ? 60 : 75;
+        
+        let line1 = displayTitle;
+        let line2 = "";
+        if (displayTitle.length > 25) {
+            const words = displayTitle.split(' ');
+            const mid = Math.ceil(words.length / 2);
+            line1 = words.slice(0, mid).join(' ');
+            line2 = words.slice(mid).join(' ');
+        }
+
         const nameSvg = `
-            <svg width="${WIDTH}" height="200">
+            <svg width="1000" height="400">
                 <style>
-                    .title { fill: #000; font-size: 80px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; letter-spacing: -2px; }
-                    .subtitle { fill: #666; font-size: 40px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 4px; }
+                    .title { fill: #000; font-size: ${titleFontSize}px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; }
                 </style>
-                <text x="50%" y="80" text-anchor="middle" class="title">${businessName}</text>
-                <text x="50%" y="150" text-anchor="middle" class="subtitle">Help us grow with a review!</text>
+                <text x="50%" y="100" text-anchor="middle" class="title">${line1}</text>
+                ${line2 ? `<text x="50%" y="220" text-anchor="middle" class="title">${line2}</text>` : ''}
             </svg>
         `;
-        composites.push({ input: Buffer.from(nameSvg), top: logoBuffer ? 550 : 300, left: 0 });
+        composites.push({ input: Buffer.from(nameSvg), top: logoBottom, left: (WIDTH - 1000) / 2 });
 
-        // C. QR Code (Center)
+        const nameBottom = logoBottom + (line2 ? 250 : 150);
+
+        // C. Subtitle (Stitch Style)
+        const subtitleSvg = `
+            <svg width="${WIDTH}" height="100">
+                <style>
+                    .subtitle { fill: #555; font-size: 45px; font-weight: 800; font-family: sans-serif; text-transform: uppercase; letter-spacing: 5px; }
+                </style>
+                <text x="50%" y="60" text-anchor="middle" class="subtitle">Help us grow with a review!</text>
+            </svg>
+        `;
+        composites.push({ input: Buffer.from(subtitleSvg), top: nameBottom + 50, left: 0 });
+
+        // D. QR Code (Large & Central)
         const processedQr = await sharp(qrBuffer)
-            .resize(700, 700)
+            .resize(900, 900)
             .toBuffer();
-        composites.push({ input: processedQr, top: logoBuffer ? 850 : 600, left: (WIDTH - 700) / 2 });
+        composites.push({ input: processedQr, top: nameBottom + 250, left: (WIDTH - 900) / 2 });
 
-        // D. Footer Instruction
+        // E. Footer (Instruction & Branding)
         const footerSvg = `
-            <svg width="${WIDTH}" height="150">
+            <svg width="${WIDTH}" height="300">
                 <style>
-                    .instruction { fill: #000; font-size: 35px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; }
-                    .brand { fill: #999; font-size: 20px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 2px; }
+                    .instruction { fill: #000; font-size: 50px; font-weight: 900; font-family: sans-serif; text-transform: uppercase; }
+                    .brand { fill: #bbb; font-size: 26px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 4px; }
                 </style>
-                <text x="50%" y="50" text-anchor="middle" class="instruction">Scan with your camera</text>
-                <text x="50%" y="100" text-anchor="middle" class="brand">Powered by AI Google Review</text>
+                <text x="50%" y="100" text-anchor="middle" class="instruction">Scan with your camera</text>
+                <text x="50%" y="180" text-anchor="middle" class="brand">Powered by AI Google Review Agent</text>
             </svg>
         `;
-        composites.push({ input: Buffer.from(footerSvg), top: HEIGHT - 200, left: 0 });
+        composites.push({ input: Buffer.from(footerSvg), top: HEIGHT - 350, left: 0 });
 
         // 4. Build Final Flyer
         return await flyer.composite(composites).png().toBuffer();
