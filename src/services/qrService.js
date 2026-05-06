@@ -71,7 +71,7 @@ export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
         // B. Business Name (Robust SVG Multi-line)
         const displayTitle = businessName.toUpperCase();
         const titleFontSize = displayTitle.length > 30 ? 60 : 75;
-        
+
         let line1 = displayTitle;
         let line2 = "";
         if (displayTitle.length > 25) {
@@ -119,7 +119,7 @@ export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
                     .brand { fill: #bbb; font-size: 26px; font-weight: 700; font-family: sans-serif; text-transform: uppercase; letter-spacing: 4px; }
                 </style>
                 <text x="50%" y="100" text-anchor="middle" class="instruction">Scan with your camera</text>
-                <text x="50%" y="180" text-anchor="middle" class="brand">Powered by AI Google Review Agent</text>
+                <text x="50%" y="180" text-anchor="middle" class="brand">Powered by ReviewStack AI</text>
             </svg>
         `;
         composites.push({ input: Buffer.from(footerSvg), top: HEIGHT - 350, left: 0 });
@@ -173,12 +173,12 @@ export const generateAndUploadQR = async (shortCode, logoUrl = null) => {
                         background: { r: 255, g: 255, b: 255, alpha: 1 }
                     }
                 })
-                .composite([{
-                    input: logoResize,
-                    gravity: 'center'
-                }])
-                .png()
-                .toBuffer();
+                    .composite([{
+                        input: logoResize,
+                        gravity: 'center'
+                    }])
+                    .png()
+                    .toBuffer();
 
                 // Composite the logo onto the center of the QR code
                 finalBuffer = await sharp(qrBuffer)
