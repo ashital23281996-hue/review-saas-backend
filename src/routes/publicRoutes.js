@@ -6,7 +6,57 @@ import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 
 
 const router = express.Router();
-console.log('--- PUBLIC ROUTER INITIALIZING ---');
+
+/**
+ * Professional Discovery Endpoint (Combined Metadata + Tags)
+ * Reduces 2 round-trips to 1 for faster mobile loading.
+ */
+router.get('/discovery/:shortCode', async (req, res) => {
+    try {
+        const { shortCode } = req.params;
+        const { lang = 'English' } = req.query;
+
+        // 1. High-Speed Business Lookup
+        const business = await prisma.business.findFirst({ 
+            where: { shortCode },
+            select: { id: true, businessName: true, category: true, logoUrl: true, googleMapsUrl: true } 
+        });
+        
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+
+        // 2. Fetch tags for this category (with "General" fallback)
+        let allTags = await prisma.industryTag.findMany({ 
+            where: { category: business.category, language: lang },
+            select: { id: true, icon: true, tag: true }
+        });
+
+        // FALLBACK: If no tags for specific category, use "General"
+        if (allTags.length === 0) {
+            console.log(`[Discovery] No tags for ${business.category}, using General fallback...`);
+            allTags = await prisma.industryTag.findMany({ 
+                where: { category: 'General', language: lang },
+                select: { id: true, icon: true, tag: true }
+            });
+        }
+
+        // 3. Random Sampling (6, 9, or 12)
+        const limits = [6, 9, 12];
+        const randomLimit = limits[Math.floor(Math.random() * limits.length)];
+        
+        const sampledTags = allTags
+            .sort(() => 0.5 - Math.random())
+            .slice(0, randomLimit)
+            .map(t => ({ id: t.id, icon: t.icon, label: t.tag }));
+
+        res.json({
+            business,
+            tags: sampledTags
+        });
+    } catch (error) {
+        console.error('[Discovery] Critical Error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
 
 // Diagnostic Logger: Track all hits to /api/public
 router.use((req, res, next) => {
@@ -97,28 +147,22 @@ router.post('/review', reviewRateLimiter, async (req, res) => {
         }
 
         const business = await prisma.business.findFirst({ where: { shortCode } });
-        if (!business) return res.status(404).json({ error: 'Business not found' });
-
-        // Enhanced AI Prompt with Category-Specific Awareness
+        if (!business) return res.status(404).json({ error: 'Business not found' });        // Lovable & Human-First Prompt (Inventor Speed)
+        // Lovable & Human-First Prompt (Inventor Speed)
+        // High-Quality Lovable Prompt
         const prompt = `
-            TASK: Write a casual, raw Google Maps review for "${business.businessName}", which is a ${business.category || 'local business'}.
-            PERSONA: You are a real customer. You are NOT an AI. You are a local person who just visited this ${business.category || 'place'}.
-
-            CRITICAL HUMAN BEHAVIOR RULES:
-            1. NO ROBOT OPENINGS: Never start with "I recently visited" or "Highly recommend". Start with the direct experience.
-            2. EMOTIONAL START: Start with a feeling (e.g., "Maza aa gaya", "Truly authentic", "Super fast service").
-            3. IMPERFECT & PUNCHY: Use 1-2 short, human-like sentences. Avoid perfect grammar.
-            4. LANGUAGE & SCRIPT (STRICT):
-               - Requested Language: ${lang}
-               - If Hindi or Pahadi: Use DEVANAGARI script ONLY. No English letters. (e.g. "बढ़िया सर्विस है")
-               - If English: Use casual, conversational Indian-English style.
-            5. TAG INTEGRATION: You MUST naturally weave in these specific concepts: ${tags.join(', ')}. 
-            6. NO JARGON: Write like a person texting a friend. 
+            Write a detailed, lovable 5-star Google review for "${business.businessName}" (${business.category || 'business'}).
             
-            GOAL: Write exactly 15-25 words. No hashtags. No quotes.
+            STRICT RULES:
+            1. PERSONA: You are a real, very happy local customer.
+            2. LENGTH: You MUST write at least 30-40 words total. 
+            3. CONTENT: Use 2-3 warm, descriptive sentences. Start with an emotional hook.
+            4. LANGUAGE: ${lang} ONLY. (Pure English or Devanagari Hindi/Pahadi).
+            5. TAGS: You MUST naturally integrate these details: ${tags.join(', ')}.
+            6. FORMAT: No hashtags, no quotes, no conversational filler. Just the review text.
         `;
 
-        const review = await callGemini(process.env.GEMINI_API_KEY, prompt, 0.9, "gemini-2.5-flash");
+        const review = await callGemini(process.env.GEMINI_API_KEY, prompt, 1.0);
 
         if (review) {
             console.log(`[ReviewGen] Generated for ${business.businessName} (${lang}): ${review.substring(0, 30)}...`);
@@ -132,48 +176,68 @@ router.post('/review', reviewRateLimiter, async (req, res) => {
 });
 
 /**
- * Professional AI Caller with Retry Logic for High Demand
+ * Never-Fail AI Caller with Multi-Model Fallback
  */
-async function callGemini(apiKey, prompt, temperature = 0.7, modelName = "gemini-2.5-flash", schema = null) {
+async function callGemini(apiKey, prompt, temperature = 0.7, schema = null) {
     if (!apiKey) {
         console.error("[Gemini] ERROR: API Key missing!");
         return null;
     }
 
-    let attempts = 0;
-    const maxAttempts = 3;
-    const baseDelay = 2000; // 2 seconds
+    // Comprehensive fallback list for 100% uptime
+    const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"];
+    
+    // Inject Lovable Persona directly into the prompt for maximum compatibility
+    const masterPrompt = `
+        INSTRUCTIONS: You are a warm, lovable local customer writing a 5-star Google review. 
+        Your review must be 30-40 words long, consist of 2-3 detailed sentences, and feel authentic. 
+        Never use hashtags or quotes. 
 
-    while (attempts < maxAttempts) {
-        try {
-            const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({
-                model: modelName,
-                generationConfig: {
-                    temperature,
-                    ...(schema && { responseMimeType: "application/json", responseSchema: schema })
+        USER DATA: ${prompt}
+    `;
+
+    for (const modelName of modelsToTry) {
+        let attempts = 0;
+        const maxAttempts = 2; 
+        const baseDelay = 1000; 
+
+        while (attempts < maxAttempts) {
+            try {
+                const genAI = new GoogleGenerativeAI(apiKey);
+                const model = genAI.getGenerativeModel({
+                    model: modelName,
+                    generationConfig: {
+                        temperature,
+                        maxOutputTokens: 300, 
+                        topP: 0.95,           
+                        topK: 64,             
+                        ...(schema && { responseMimeType: "application/json", responseSchema: schema })
+                    }
+                });
+
+                const result = await model.generateContent({
+                    contents: [{ role: "user", parts: [{ text: masterPrompt }] }]
+                });
+
+                const response = await result.response;
+                return response.text();
+            } catch (e) {
+                attempts++;
+                const msg = e.message.toLowerCase();
+                const isRetryable = msg.includes("503") || msg.includes("404") || msg.includes("429") || msg.includes("demand") || msg.includes("unavailable");
+                
+                if (isRetryable) {
+                    if (attempts < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, baseDelay));
+                        continue;
+                    } else if (modelsToTry.indexOf(modelName) < modelsToTry.length - 1) {
+                        console.warn(`[Gemini] Switching from ${modelName} to backup...`);
+                        break; 
+                    }
                 }
-            });
-
-            const result = await model.generateContent({
-                contents: [{ role: "user", parts: [{ text: prompt }] }]
-            });
-
-            const response = await result.response;
-            return response.text();
-        } catch (e) {
-            attempts++;
-            const isServiceUnavailable = e.message.includes("503") || e.message.includes("Service Unavailable") || e.message.includes("high demand");
-            
-            if (isServiceUnavailable && attempts < maxAttempts) {
-                const delay = baseDelay * Math.pow(2, attempts - 1);
-                console.warn(`[Gemini] High demand (503). Retrying in ${delay}ms... (Attempt ${attempts}/${maxAttempts})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                continue;
+                console.error(`[Gemini] Error with ${modelName}:`, e.message);
+                break;
             }
-
-            console.error(`[Gemini] SDK ERROR (Attempt ${attempts}):`, e.message);
-            if (attempts >= maxAttempts) return null;
         }
     }
     return null;
