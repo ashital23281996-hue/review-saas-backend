@@ -354,11 +354,13 @@ async function callGemini(apiKey, prompt, temperature = 0.7, schema = null) {
                     model: modelName,
                     generationConfig: {
                         temperature,
-                        maxOutputTokens: 300, 
+                        maxOutputTokens: 2048, 
                         topP: 0.95,           
                         topK: 64,             
                         ...(schema && { responseMimeType: "application/json", responseSchema: schema })
-                    }
+                    },
+                    // Disable "thinking" mode for 2.5 models — all tokens go to actual review output
+                    ...(modelName.includes('2.5') && { thinkingConfig: { thinkingBudget: 0 } })
                 });
 
                 const result = await model.generateContent({
