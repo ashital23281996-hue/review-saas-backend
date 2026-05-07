@@ -17,6 +17,7 @@ console.log('PORT:', process.env.PORT);
 console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN);
 console.log('CLERK_SECRET_KEY Loaded:', !!process.env.CLERK_SECRET_KEY);
 const app = express();
+app.set('trust proxy', 1);
 
 // 1. GLOBAL MIDDLEWARE (Security & CORS First)
 app.use(helmet());

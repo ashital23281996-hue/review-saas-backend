@@ -3,6 +3,26 @@ import 'dotenv/config';
 import rateLimit from 'express-rate-limit';
 import prisma from '../config/db.js';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import fs from 'fs';
+import path from 'path';
+
+// AI Review Cache Path
+const CACHE_FILE = path.join(process.cwd(), 'review-cache.json');
+
+function getCache() {
+    try {
+        if (fs.existsSync(CACHE_FILE)) return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    } catch (e) { console.error('Cache Read Error:', e); }
+    return {};
+}
+
+function setCache(key, value) {
+    try {
+        const cache = getCache();
+        cache[key] = value;
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+    } catch (e) { console.error('Cache Write Error:', e); }
+}
 
 
 const router = express.Router();
@@ -24,19 +44,36 @@ router.get('/discovery/:shortCode', async (req, res) => {
         
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        // 2. Fetch tags for this category (with "General" fallback)
+        // 2. Fetch tags for this category (with Multi-Level Fallback)
         let allTags = await prisma.industryTag.findMany({ 
             where: { category: business.category, language: lang },
             select: { id: true, icon: true, tag: true }
         });
-
-        // FALLBACK: If no tags for specific category, use "General"
+        
+        // FALLBACK 1: If no tags for specific category in this language, try "General" in this language
         if (allTags.length === 0) {
-            console.log(`[Discovery] No tags for ${business.category}, using General fallback...`);
+            console.log(`[Discovery] No tags for ${business.category} in ${lang}, trying General...`);
             allTags = await prisma.industryTag.findMany({ 
                 where: { category: 'General', language: lang },
                 select: { id: true, icon: true, tag: true }
             });
+        }
+
+        // FALLBACK 2: If STILL no tags (language not seeded), fallback to English for the tags themselves
+        if (allTags.length === 0 && lang !== 'English') {
+            console.log(`[Discovery] No tags for ${lang} found. Falling back to English tags (AI will still write in ${lang}).`);
+            allTags = await prisma.industryTag.findMany({ 
+                where: { category: business.category, language: 'English' },
+                select: { id: true, icon: true, tag: true }
+            });
+
+            // Final safety: General English
+            if (allTags.length === 0) {
+                allTags = await prisma.industryTag.findMany({ 
+                    where: { category: 'General', language: 'English' },
+                    select: { id: true, icon: true, tag: true }
+                });
+            }
         }
 
         // 3. Random Sampling (6, 9, or 12)
@@ -131,8 +168,8 @@ router.get('/tags/:shortCode', async (req, res) => {
 // Strict rate limiter for AI generation to protect API costs and keys
 const reviewRateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Limit each IP to 5 requests per window
-    message: { error: 'Too many reviews generated. Please try again in 15 minutes.' },
+    max: 50, // Increased for development testing
+    message: { error: "Too many reviews generated. Please try again in 15 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -147,22 +184,55 @@ router.post('/review', reviewRateLimiter, async (req, res) => {
         }
 
         const business = await prisma.business.findFirst({ where: { shortCode } });
-        if (!business) return res.status(404).json({ error: 'Business not found' });        // Lovable & Human-First Prompt (Inventor Speed)
-        // Lovable & Human-First Prompt (Inventor Speed)
-        // High-Quality Lovable Prompt
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+
+        // 1. Contextual Intelligence (Dynamic Tone Randomization)
+        const possibleTones = ['Professional & Polished', 'Casual & Friendly', 'Excited & Energetic', 'Heartfelt & Warm', 'Concise & Direct'];
+        const tone = possibleTones[Math.floor(Math.random() * possibleTones.length)];
+        
+        const now = new Date();
+        const hour = now.getHours();
+        const isWeekend = [0, 6].includes(now.getDay());
+        const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+        const dayContext = isWeekend ? 'weekend' : 'weekday';
+
+        // 2. Elite & Heartfelt Prompt (ULTRA-REINFORCED FOR LENGTH)
         const prompt = `
-            Write a detailed, lovable 5-star Google review for "${business.businessName}" (${business.category || 'business'}).
-            
-            STRICT RULES:
-            1. PERSONA: You are a real, very happy local customer.
-            2. LENGTH: You MUST write at least 30-40 words total. 
-            3. CONTENT: Use 2-3 warm, descriptive sentences. Start with an emotional hook.
-            4. LANGUAGE: ${lang} ONLY. (Pure English or Devanagari Hindi/Pahadi).
-            5. TAGS: You MUST naturally integrate these details: ${tags.join(', ')}.
-            6. FORMAT: No hashtags, no quotes, no conversational filler. Just the review text.
+            Act as a passionate local guide writing a 5-star Google review for "${business.businessName}" (${business.category || 'business'}).
+
+            GOAL: Write a detailed, storytelling review between 50 and 60 words.
+            TONE: ${tone}
+            LANGUAGE: ${lang} ONLY.
+
+            STRUCTURE & ELABORATION:
+            1. HOOK: Start with an exciting hook about your ${timeOfDay} visit. (at least 10 words)
+            2. BODY: Describe these specific highlights in detail: ${tags.join(', ')}. Write at least two descriptive sentences about how they exceeded your expectations. (at least 30 words)
+            3. RECOMMENDATION: Explain why this is the best spot for a ${dayContext} and give a personal recommendation. (at least 15 words)
+            4. ENDING: End with a single relevant emoji.
+
+            CRITICAL: If your response is shorter than 50 words, you have FAILED. Add more descriptive adjectives about the service, quality, and atmosphere to ensure you hit the 50-60 word range.
         `;
 
-        const review = await callGemini(process.env.GEMINI_API_KEY, prompt, 1.0);
+        // AI-PRIORITY LOGIC
+        const tagHash = `${business.id}_${tags.sort().join('_')}_${lang}_${tone}`;
+        let review = await callGemini(process.env.GEMINI_API_KEY, prompt, 0.9); // High temperature for more variety
+
+        if (review) {
+            // Save successful AI review to cache for secondary priority
+            setCache(tagHash, review);
+        } else {
+            // SECONDARY PRIORITY: Check Cache
+            console.log(`[ReviewGen] AI Unavailable. Checking Cache for ${tagHash}...`);
+            const cache = getCache();
+            if (cache[tagHash]) {
+                review = cache[tagHash];
+                console.log(`[ReviewGen] Cache HIT!`);
+            } else {
+                // TERTIARY PRIORITY: Human Story Fallback
+                console.log(`[ReviewGen] Cache MISS. Using Human Story Fallback (Tone: ${tone})...`);
+                review = generateFallbackReview(business.businessName, tags, lang, tone);
+            }
+        }
 
         if (review) {
             console.log(`[ReviewGen] Generated for ${business.businessName} (${lang}): ${review.substring(0, 30)}...`);
@@ -178,20 +248,96 @@ router.post('/review', reviewRateLimiter, async (req, res) => {
 /**
  * Never-Fail AI Caller with Multi-Model Fallback
  */
+/**
+ * Elite "Human-Story" Fallback Engine ($0 Cost)
+ * Generates 50-60 word high-quality reviews without AI API.
+ */
+function generateFallbackReview(businessName, tags, lang, tone = 'Friendly') {
+    const now = new Date();
+    const hour = now.getHours();
+    const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+    
+    const openers = {
+        'English': [
+            `What a perfect way to spend a ${timeOfDay}!`,
+            "Simply phenomenal experience from start to finish!",
+            "I was absolutely blown away by the quality here!",
+            "What a delightful discovery for my daily routine!",
+            "Absolute perfection in every single detail!"
+        ],
+        'Hindi': [
+            `आज की ${timeOfDay} यहाँ बिताकर मज़ा आ गया!`,
+            "वाकई शानदार अनुभव रहा, सब कुछ लाजवाब था!",
+            "मैं यहाँ की सर्विस से बहुत ज्यादा प्रभावित हूँ!",
+            "क्या बेहतरीन जगह है, यहाँ बार-बार आने का मन करता है!",
+            "शुरू से अंत तक सब कुछ एकदम परफेक्ट था!"
+        ],
+        'Pahadi': [
+            `आज की ${timeOfDay} इडां आई करी बड़ा मजा आया!`,
+            "सचमुच मज़ा आई गवा, सब कुछ खरी थिई!",
+            "ऐथू की सेवा देखि करी मैं बड़ा खुश हुआ!",
+            "क्या सुणी जगा है, इडां तां बार-बार आणा चाहीदा!",
+            "जईं देखी तईं सब कुछ बड़ा खरा थिई!"
+        ]
+    };
+
+    const stories = {
+        'English': [
+            `I've been looking for a place like ${businessName} for a long time. Every detail was handled with such care, and you can really feel the passion they put into their work.`,
+            `The atmosphere at ${businessName} is so welcoming and warm. It feels like visiting family, and the quality they deliver is consistently top-notch.`,
+            `I am so happy I found ${businessName}. The way they handle everything is just so professional and heartfelt at the same time.`
+        ],
+        'Hindi': [
+            `${businessName} जैसी जगह की मुझे काफी समय से तलाश थी। यहाँ हर चीज़ का बहुत बारीकी से ध्यान रखा जाता है।`,
+            `${businessName} का माहौल बहुत ही सुखद और अपनापन भरा है। यहाँ की क्वालिटी हमेशा अव्वल दर्जे की होती है।`,
+            `${businessName} को पाकर मैं बहुत खुश हूँ। जिस तरह से ये सब कुछ संभालते हैं, वो वाकई काबिले तारीफ है।`
+        ],
+        'Pahadi': [
+            `${businessName} सई जगा मिंई बहुत टैम ला मिली। इडां हर चिजी दा बड़ा सुणा ध्यान रखा जांदा है।`,
+            `${businessName} दा माहौल बड़ा ई खरा ते आपणा सईं है। इथू की क्वालिटी सदा ई खरी हुंदी है।`,
+            `${businessName} मिली करी मिंई बड़ी ख़ुशी हुई। जईं सईं ये सारा कुछ संभालदे, ओ सचमुच सराणा लायक है।`
+        ]
+    };
+
+    const closers = {
+        'English': ["I will definitely be coming back soon with my friends!", "Highly recommended to anyone looking for the best experience.", "Do yourself a favor and check this place out today!", "Simply outstanding. Five stars all the way!"],
+        'Hindi': ["मैं जल्द ही अपने दोस्तों के साथ फिर आऊँगा!", "बेहतरीन अनुभव चाहने वाले किसी भी व्यक्ति के लिए इसकी अत्यधिक अनुशंसा करता हूँ।", "एक बार यहाँ जरूर आएं, आपको निराशा नहीं होगी!", "वाकई लाजवाब। पूरे पांच सितारे!"],
+        'Pahadi': ["मैं जल्दी ई अपणे दोस्तें गै दोबारा औंगा!", "खरा अनुभव चाहुणे वालें तांईं इथू जरूर औणा चईदा।", "इक बारी इडां जरूर आओ, तुसां जो निराश नी होणा पोणा!", "सचमुच लाजवाब। पूरे पंजां सितारे!"]
+    };
+
+    const l = openers[lang] ? lang : 'English';
+    const opener = openers[l][Math.floor(Math.random() * openers[l].length)];
+    const story = stories[l][Math.floor(Math.random() * stories[l].length)];
+    const closer = closers[l][Math.floor(Math.random() * closers[l].length)];
+
+    // Integrate tags naturally
+    const tagString = tags.length > 0 ? ` The ${tags.slice(0, -1).join(', ')}${tags.length > 1 ? ' and ' : ''}${tags.slice(-1)} made the visit even more special.` : "";
+
+    const finalReview = `${opener} ${story}${tagString} ${closer}`;
+    
+    // Ensure word count is hit by appending a bit more if needed
+    if (finalReview.split(' ').length < 50) {
+        return finalReview + (l === 'English' ? " You won't regret visiting!" : l === 'Hindi' ? " यहाँ आकर आपको पछतावा नहीं होगा!" : " इडां आई करी तुसां जो पछतावा नी होणा!");
+    }
+
+    return finalReview;
+}
+
 async function callGemini(apiKey, prompt, temperature = 0.7, schema = null) {
     if (!apiKey) {
         console.error("[Gemini] ERROR: API Key missing!");
         return null;
     }
 
-    // Comprehensive fallback list for 100% uptime
-    const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"];
+    // Comprehensive fallback list for 100% uptime (using verified key capabilities)
+    const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-flash"];
     
-    // Inject Lovable Persona directly into the prompt for maximum compatibility
+    // Elite Instructions for maximum variety and length
     const masterPrompt = `
         INSTRUCTIONS: You are a warm, lovable local customer writing a 5-star Google review. 
-        Your review must be 30-40 words long, consist of 2-3 detailed sentences, and feel authentic. 
-        Never use hashtags or quotes. 
+        Your goal is to write a detailed, heartfelt review that is 50-60 words long. 
+        Use rich, descriptive language and vary your sentence structure. 
+        Never use hashtags, quotes, or mentions of being an AI. 
 
         USER DATA: ${prompt}
     `;
@@ -224,6 +370,8 @@ async function callGemini(apiKey, prompt, temperature = 0.7, schema = null) {
             } catch (e) {
                 attempts++;
                 const msg = e.message.toLowerCase();
+                console.error(`[Gemini Error] Model: ${modelName}, Attempt: ${attempts}, Message: ${e.message}`);
+                
                 const isRetryable = msg.includes("503") || msg.includes("404") || msg.includes("429") || msg.includes("demand") || msg.includes("unavailable");
                 
                 if (isRetryable) {
