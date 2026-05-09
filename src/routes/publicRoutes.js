@@ -176,7 +176,7 @@ const reviewRateLimiter = rateLimit({
 
 router.post('/review', reviewRateLimiter, async (req, res) => {
     try {
-        const { shortCode, tags, language } = req.body;
+        const { shortCode, tags, language, rating = 5 } = req.body;
         const lang = language || 'English';
 
         if (!shortCode || !tags || !Array.isArray(tags)) {
@@ -198,19 +198,22 @@ router.post('/review', reviewRateLimiter, async (req, res) => {
 
         // 2. Elite & Heartfelt Prompt (ULTRA-REINFORCED FOR LENGTH)
         const prompt = `
-            Act as a passionate local guide writing a 5-star Google review for "${business.businessName}" (${business.category || 'business'}).
-
+            Act as a customer writing a ${rating}-star Google review for "${business.businessName}" (${business.category || 'business'}).
+            
+            STARS: ${rating} out of 5.
+            
             GOAL: Write a detailed, storytelling review between 50 and 60 words.
+            SENTIMENT: ${rating >= 4 ? 'Highly positive and enthusiastic' : rating >= 3 ? 'Balanced, fair, and honest' : 'Constructive and disappointed'}.
             TONE: ${tone}
             LANGUAGE: ${lang} ONLY.
 
             STRUCTURE & ELABORATION:
-            1. HOOK: Start with an exciting hook about your ${timeOfDay} visit. (at least 10 words)
-            2. BODY: Describe these specific highlights in detail: ${tags.join(', ')}. Write at least two descriptive sentences about how they exceeded your expectations. (at least 30 words)
-            3. RECOMMENDATION: Explain why this is the best spot for a ${dayContext} and give a personal recommendation. (at least 15 words)
+            1. HOOK: Start with a natural hook about your ${timeOfDay} visit. (at least 10 words)
+            2. BODY: Describe these specific highlights: ${tags.join(', ')}. Mention how they contributed to your ${rating}-star experience. (at least 30 words)
+            3. RECOMMENDATION: Give a personal recommendation based on your ${dayContext} visit. (at least 15 words)
             4. ENDING: End with a single relevant emoji.
 
-            CRITICAL: If your response is shorter than 50 words, you have FAILED. Add more descriptive adjectives about the service, quality, and atmosphere to ensure you hit the 50-60 word range.
+            CRITICAL: If your response is shorter than 50 words, you have FAILED. Add more descriptive adjectives to hit the 50-60 word range.
         `;
 
         // AI-PRIORITY LOGIC
