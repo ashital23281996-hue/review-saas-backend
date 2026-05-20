@@ -5,6 +5,7 @@ import prisma from '../config/db.js';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
+import { resolveShortCode } from '../utils/slugHelper.js';
 
 // AI Review Cache Path
 const CACHE_FILE = path.join(process.cwd(), 'review-cache.json');
@@ -25,6 +26,29 @@ function setCache(key, value) {
 }
 
 
+// In-memory cache for predefined Industry Tags
+let tagCache = null;
+let lastCacheTime = 0;
+const TAG_CACHE_TTL = 30 * 60 * 1000; // 30 minutes cache
+
+async function getCachedTags() {
+    const now = Date.now();
+    if (!tagCache || (now - lastCacheTime > TAG_CACHE_TTL)) {
+        try {
+            console.log('[Cache] Loading Industry Tags from database...');
+            tagCache = await prisma.industryTag.findMany({
+                select: { id: true, category: true, tag: true, icon: true, language: true }
+            });
+            lastCacheTime = now;
+            console.log(`[Cache] Successfully cached ${tagCache.length} industry tags in memory.`);
+        } catch (error) {
+            console.error('[Cache] Error preloading tags:', error);
+            return tagCache || []; // Return stale cache if DB error
+        }
+    }
+    return tagCache;
+}
+
 const router = express.Router();
 
 /**
@@ -33,48 +57,43 @@ const router = express.Router();
  */
 router.get('/discovery/:shortCode', async (req, res) => {
     try {
-        const { shortCode } = req.params;
+        const { shortCode: rawShortCode } = req.params;
+        const shortCode = resolveShortCode(rawShortCode);
         const { lang = 'English' } = req.query;
 
+        console.log(`[Discovery API] Fetching business with shortCode: ${shortCode} (raw: ${rawShortCode})`);
+        console.time('DB Business Lookup');
         // 1. High-Speed Business Lookup
         const business = await prisma.business.findFirst({ 
             where: { shortCode },
             select: { id: true, businessName: true, category: true, logoUrl: true, googleMapsUrl: true } 
         });
+        console.timeEnd('DB Business Lookup');
         
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        // 2. Fetch tags for this category (with Multi-Level Fallback)
-        let allTags = await prisma.industryTag.findMany({ 
-            where: { category: business.category, language: lang },
-            select: { id: true, icon: true, tag: true }
-        });
+        // 2. Fetch tags for this category (with Multi-Level Fallback from Cache)
+        console.time('InMemory Tag Filter');
+        const cachedTags = await getCachedTags();
+        let allTags = cachedTags.filter(t => t.category === business.category && t.language === lang);
         
         // FALLBACK 1: If no tags for specific category in this language, try "General" in this language
         if (allTags.length === 0) {
-            console.log(`[Discovery] No tags for ${business.category} in ${lang}, trying General...`);
-            allTags = await prisma.industryTag.findMany({ 
-                where: { category: 'General', language: lang },
-                select: { id: true, icon: true, tag: true }
-            });
+            console.log(`[Discovery Cache] No tags for ${business.category} in ${lang}, trying General...`);
+            allTags = cachedTags.filter(t => t.category === 'General' && t.language === lang);
         }
 
         // FALLBACK 2: If STILL no tags (language not seeded), fallback to English for the tags themselves
         if (allTags.length === 0 && lang !== 'English') {
-            console.log(`[Discovery] No tags for ${lang} found. Falling back to English tags (AI will still write in ${lang}).`);
-            allTags = await prisma.industryTag.findMany({ 
-                where: { category: business.category, language: 'English' },
-                select: { id: true, icon: true, tag: true }
-            });
+            console.log(`[Discovery Cache] No tags for ${lang} found. Falling back to English tags.`);
+            allTags = cachedTags.filter(t => t.category === business.category && t.language === 'English');
 
             // Final safety: General English
             if (allTags.length === 0) {
-                allTags = await prisma.industryTag.findMany({ 
-                    where: { category: 'General', language: 'English' },
-                    select: { id: true, icon: true, tag: true }
-                });
+                allTags = cachedTags.filter(t => t.category === 'General' && t.language === 'English');
             }
         }
+        console.timeEnd('InMemory Tag Filter');
 
         // 3. Random Sampling (6, 9, or 12)
         const limits = [6, 9, 12];
@@ -111,7 +130,8 @@ router.get('/ping', (req, res) => res.json({ status: 'Public Router is ALIVE', t
  */
 router.get('/tags/:shortCode', async (req, res) => {
     try {
-        const { shortCode } = req.params;
+        const { shortCode: rawShortCode } = req.params;
+        const shortCode = resolveShortCode(rawShortCode);
         const lang = req.query.lang || 'English'; // Note: Lang filtering can be added later in DB
         console.log(`[PublicAPI] DB Tag Fetch: ${shortCode}`);
 
@@ -176,7 +196,8 @@ const reviewRateLimiter = rateLimit({
 
 router.post('/review', reviewRateLimiter, async (req, res) => {
     try {
-        const { shortCode, tags, language, rating = 5 } = req.body;
+        const { shortCode: rawShortCode, tags, language, rating = 5 } = req.body;
+        const shortCode = resolveShortCode(rawShortCode);
         const lang = language || 'English';
 
         if (!shortCode || !tags || !Array.isArray(tags)) {
@@ -556,13 +577,14 @@ router.get('/expand/metadata', async (req, res) => {
  */
 router.get('/business/:identifier', async (req, res) => {
     try {
-        const { identifier } = req.params;
+        const { identifier: rawIdentifier } = req.params;
+        const identifier = resolveShortCode(rawIdentifier);
         console.log(`[PublicAPI] Discovery: ${identifier}`);
 
         const business = await prisma.business.findFirst({
             where: {
                 OR: [
-                    { id: identifier },
+                    { id: rawIdentifier },
                     { shortCode: identifier }
                 ]
             }
@@ -572,6 +594,39 @@ router.get('/business/:identifier', async (req, res) => {
         res.json(business);
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Public Feedback Endpoint (Negative Review Gating)
+ */
+router.post('/feedback', async (req, res) => {
+    try {
+        const { shortCode: rawShortCode, rating, message } = req.body;
+        const shortCode = resolveShortCode(rawShortCode);
+        
+        if (!shortCode || !rating || !message) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const business = await prisma.business.findFirst({
+            where: { shortCode }
+        });
+
+        if (!business) return res.status(404).json({ error: 'Business not found' });
+
+        const feedback = await prisma.feedback.create({
+            data: {
+                businessId: business.id,
+                rating: parseInt(rating),
+                message
+            }
+        });
+
+        res.status(201).json({ success: true, feedback });
+    } catch (error) {
+        console.error('[Feedback] Error saving feedback:', error);
+        res.status(500).json({ error: 'Failed to save feedback' });
     }
 });
 

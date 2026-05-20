@@ -28,19 +28,15 @@ model Business {
   googlePlaceId String      @unique
   googleMapsUrl String?     // Direct link to the Google Maps review tab
   logoUrl       String?     // URL to the business logo
-  coverImageUrl String?     // Large cover image for the landing page
   shortCode     String      @unique // e.g., 'cafe123'
   qrCodeUrl     String?     // URL to the ImageKit hosted QR code
   reviewTone    String      @default("Professional") // Professional, Casual, Friendly, Funny
   createdAt     DateTime    @default(now())
-  
-  // Caching Fields for AI Optimization
-  cachedTags    Json?
-  tagsLang      String?
 
   // Relations
   user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   scanEvents    ScanEvent[]
+  feedbacks     Feedback[]
 
   @@index([shortCode]) // Critical for fast lookups during redirects
 }
@@ -80,4 +76,16 @@ model Lead {
   status    String   @default("New") // New, Contacted, Followed Up, Closed
   source    String   @default("Landing Page")
   createdAt DateTime @default(now())
+}
+
+// 6. Private Customer Feedback (Negative Review Gating)
+model Feedback {
+  id         String   @id @default(uuid(7))
+  businessId String
+  rating     Int
+  message    String   @db.Text
+  createdAt  DateTime @default(now())
+
+  // Relations
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 }

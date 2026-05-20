@@ -5,7 +5,7 @@ import crypto from 'crypto';
 
 export const createBusiness = async (req, res) => {
     try {
-        const { businessName, category, googlePlaceId, googleMapsUrl, logoUrl, reviewTone } = req.body;
+        const { businessName, category, googlePlaceId, googleMapsUrl, logoUrl, reviewTone, customSlug } = req.body;
         const { userId } = req.auth;
 
         const { clerkClient } = await import('@clerk/express');
@@ -15,13 +15,20 @@ export const createBusiness = async (req, res) => {
         // Auto-sync user to ensure they exist in local DB
         const user = await syncUser(userId, email);
 
-        // Generate a secure combination of UUID and randomized business name tokens
-        const namePool = businessName.toLowerCase().replace(/[^a-z]/g, '');
-        const nameToken = namePool.length > 0 
+        // Generate a clean SEO-friendly slug
+        const baseSlug = customSlug && customSlug.trim().length > 0 ? customSlug : businessName;
+        const slug = baseSlug
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric chars with hyphens
+            .replace(/^-+|-+$/g, '');   // Trim leading/trailing hyphens
+
+        // Generate a 4-character suffix for uniqueness
+        const namePool = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const nameToken = namePool.length >= 4 
             ? Array.from({ length: 4 }, () => namePool[Math.floor(Math.random() * namePool.length)]).join('')
             : crypto.randomBytes(2).toString('hex');
         
-        const shortCode = `${crypto.randomUUID()}-${nameToken}`;
+        const shortCode = `${slug}-${nameToken}`;
 
         // Generate and upload QR code to ImageKit (with optional logo)
         const qrCodeUrl = await generateAndUploadQR(shortCode, logoUrl);
@@ -66,7 +73,10 @@ export const getMyBusinesses = async (req, res) => {
             where: { userId: user.id },
             include: {
                 _count: {
-                    select: { scanEvents: true }
+                    select: {
+                        scanEvents: true,
+                        feedbacks: true
+                    }
                 }
             },
             orderBy: { createdAt: 'desc' }
@@ -91,6 +101,10 @@ export const getBusinessAnalytics = async (req, res) => {
                 scanEvents: {
                     orderBy: { scannedAt: 'desc' },
                     take: 100 // Last 100 scans for detail
+                },
+                feedbacks: {
+                    orderBy: { createdAt: 'desc' },
+                    take: 100 // Last 100 feedbacks
                 }
             }
         });

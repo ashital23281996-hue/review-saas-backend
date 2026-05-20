@@ -19,6 +19,16 @@ console.log('CLERK_SECRET_KEY Loaded:', !!process.env.CLERK_SECRET_KEY);
 const app = express();
 app.set('trust proxy', 1);
 
+// Response time logger middleware
+app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        console.log(`[REQUEST LOGGER] ${req.method} ${req.url} - Status: ${res.statusCode} - ${duration}ms`);
+    });
+    next();
+});
+
 // 1. GLOBAL MIDDLEWARE (Security & CORS First)
 app.use(helmet());
 app.use(cors({
@@ -27,7 +37,20 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
+// Let's add a log before Clerk
+app.use((req, res, next) => {
+    req.startClerk = Date.now();
+    next();
+});
+
 app.use(clerkMiddleware());
+
+// Let's add a log after Clerk
+app.use((req, res, next) => {
+    const clerkDuration = Date.now() - req.startClerk;
+    console.log(`[CLERK LOG] Clerk took: ${clerkDuration}ms`);
+    next();
+});
 
 // 2. PUBLIC ROUTES
 app.use('/api/public', publicRoutes);

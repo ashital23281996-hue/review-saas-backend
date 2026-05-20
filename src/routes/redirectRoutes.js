@@ -1,5 +1,6 @@
 import express from 'express';
 import prisma from '../config/db.js';
+import { resolveShortCode } from '../utils/slugHelper.js';
 
 const router = express.Router();
 
@@ -9,7 +10,8 @@ const router = express.Router();
  */
 router.get('/:shortCode', async (req, res) => {
     try {
-        const { shortCode } = req.params;
+        const { shortCode: rawShortCode } = req.params;
+        const shortCode = resolveShortCode(rawShortCode);
 
         // 1. Find the business by shortCode
         const business = await prisma.business.findUnique({
@@ -51,10 +53,10 @@ router.get('/:shortCode', async (req, res) => {
 
         // 3. Construct the Frontend Landing Page URL
         // In production, this would be your real domain
-        const frontendUrl = `http://localhost:3000/review/${shortCode}`;
+        const frontendUrl = `http://localhost:3000/review/${business.shortCode}`;
 
         // 4. Redirect the user to your landing page!
-        console.log(`[Scan] Redirecting ${shortCode} to Landing Page: ${frontendUrl}`);
+        console.log(`[Scan] Redirecting ${business.shortCode} to Landing Page: ${frontendUrl}`);
         res.redirect(frontendUrl);
 
     } catch (error) {

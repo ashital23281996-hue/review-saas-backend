@@ -134,7 +134,8 @@ export const generateMarketingFlyer = async (businessName, logoUrl, qrUrl) => {
 
 export const generateAndUploadQR = async (shortCode, logoUrl = null) => {
     try {
-        const redirectUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/review/${shortCode}`;
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+        const redirectUrl = `${baseUrl}/review/${shortCode}`;
         const SIZE = 1024; // High res for print
         const LOGO_SIZE = 250;
 
