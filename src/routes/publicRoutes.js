@@ -425,7 +425,10 @@ router.get('/expand/metadata', async (req, res) => {
     let browser;
 
     try {
-        // Force Playwright to look for browsers in Render's persistent cache folder ONLY when on Render
+        // ---------------------------------------------------------------------
+        // When running on Render, force Playwright to use the persistent cache directory
+        // This prevents "browser not found" errors on deployment while keeping local dev safe.
+        // ---------------------------------------------------------------------
         if (process.env.RENDER) {
             process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/render/project/.cache/playwright';
         }
@@ -439,7 +442,7 @@ router.get('/expand/metadata', async (req, res) => {
         });
         const page = await context.newPage();
 
-        console.log(`[Playwright] Navigating to: ${url}`);
+        // console.log(`[Playwright] Navigating to: ${url}`);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
         // Wait for the URL to expand from the short link to the full maps.google.com link
@@ -461,95 +464,119 @@ router.get('/expand/metadata', async (req, res) => {
         const pageTitle = await page.title();
         const pageSnippet = await page.evaluate(() => document.body.innerText.substring(0, 5000));
 
-        console.log(`[Playwright] Captured: ${pageTitle}`);
+        // console.log(`[Playwright] Captured: ${pageTitle}`);
 
-        // 1. Let Gemini do the heavy lifting for Metadata
-        let name = pageTitle.split(' · ')[0].replace('Google Maps', '').trim().replace(/\s+-\s*$/, '');
-        let category = "Restaurant";
+        // Extract raw category string from the Google Maps UI
+        let rawGoogleCategory = await page.evaluate(() => {
+            const btn = document.querySelector('button.DkEaL') || document.querySelector('.fontBodyMedium > span > span > button');
+            return btn ? btn.innerText.toLowerCase() : '';
+        });
+        // console.log(`[Playwright] Extracted raw Google category: "${rawGoogleCategory}"`);
+
+        // Map the raw category into our internal buckets
+        let category = "Other"; // default fallback
+        if (rawGoogleCategory) {
+            if (['restaurant', 'cafe', 'food', 'pizza', 'bar', 'bakery'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Restaurant";
+            } else if (['hotel', 'resort', 'motel', 'inn'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Hotel";
+            } else if (['medical', 'clinic', 'doctor', 'dentist', 'hospital', 'pharmacy'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Medical";
+            } else if (['salon', 'spa', 'beauty', 'hair', 'massage', 'barber', 'parlour'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Salon & Spa";
+            } else if (['store', 'shop', 'retail', 'market', 'boutique'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Retail";
+            } else if (['museum', 'park', 'theater', 'entertainment', 'cinema', 'gym'].some(k => rawGoogleCategory.includes(k))) {
+                category = "Entertainment";
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Metadata extraction
+        // ---------------------------------------------------------------------
+        let name = pageTitle.split(' · ')[0].replace('Google Maps', '').trim().replace(/\s+-\s*$/,'');
         let logoUrl = "";
         let hexPlaceId = finalUrl.match(/1s(0x[a-fA-F0-9]+:0x[a-fA-F0-9]+)/)?.[1];
 
+        // Optional Gemini AI enrichment – only runs when a key is present
         if (process.env.GEMINI_API_KEY) {
-            console.log("[Expansion] Calling Gemini AI for precision metadata...");
+            console.log('[Expansion] Calling Gemini AI for precision metadata...');
             const aiPrompt = `Analyze this Google Maps data and return JSON for a Review SaaS.
-            URL: ${finalUrl}
-            Title: ${pageTitle}
-            Content Snippet: ${pageSnippet}
-            
-            Return ONLY a raw JSON object:
-            {
-              "name": "Clean Business Name",
-              "category": "Hotel or Restaurant or Medical or Retail or Entertainment or Other",
-              "logo": "URL to the main profile photo (usually starting with googleusercontent.com/p/) if found",
-              "hexId": "0x...:0x..."
-            }`;
+URL: ${finalUrl}
+Title: ${pageTitle}
+Content Snippet: ${pageSnippet}
 
+Return ONLY a raw JSON object:
+{
+  "name": "Clean Business Name",
+  "category": "Hotel or Restaurant or Medical or Retail or Salon & Spa or Entertainment or Other",
+  "logo": "URL to the main profile photo (usually starting with googleusercontent.com/p/) if found",
+  "hexId": "0x...:0x..."
+}`;
             const aiRes = await callGemini(process.env.GEMINI_API_KEY, aiPrompt, 0.1);
             if (aiRes) {
                 try {
-                    console.log("[Expansion] AI Raw Response:", aiRes);
+                    console.log('[Expansion] AI Raw Response:', aiRes);
                     const cleanJson = aiRes.replace(/```json/g, '').replace(/```/g, '').trim();
                     const parsed = JSON.parse(cleanJson);
                     if (parsed.name) name = parsed.name;
-                    if (parsed.category) category = parsed.category;
+                    if (parsed.category && category === "Other") category = parsed.category;
                     if (parsed.logo && !parsed.logo.includes('staticmap')) logoUrl = parsed.logo;
                     if (parsed.hexId) hexPlaceId = parsed.hexId;
                 } catch (e) {
-                    console.log("[Expansion] AI JSON Parse failed. Using fallback.");
+                    console.log('[Expansion] AI JSON Parse failed. Using fallback.');
                 }
             }
         }
 
-        // Hardcoded manual fallback if AI fails or key is missing
-        if (category === "Restaurant") {
-            const n = (name + " " + pageTitle).toLowerCase();
-            if (n.includes('museum') || n.includes('centre') || n.includes('art')) category = "Entertainment";
-            else if (n.includes('medical') || n.includes('pharmacy') || n.includes('clinic')) category = "Medical";
-            else if (n.includes('hotel') || n.includes('resort') || n.includes('inn')) category = "Hotel";
-        }
-
-        // 2. Atomic Review Link Builder
+        // ---------------------------------------------------------------------
+        // Build a deep‑link that includes coordinates and the place ID
+        // ---------------------------------------------------------------------
         let reviewLink = finalUrl;
         const bizLat = finalUrl.match(/!3d(-?\d+\.\d+)/)?.[1];
         const bizLon = finalUrl.match(/!4d(-?\d+\.\d+)/)?.[1];
         const coordsMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
         const lat = bizLat || coordsMatch?.[1];
         const lon = bizLon || coordsMatch?.[2];
-
         const topicIdMatch = finalUrl.match(/(!16s[^?&!]+)/);
         const topicId = topicIdMatch ? topicIdMatch[1] : "";
-
-        // Capture extra context like !15s if present
         const contextMatch = finalUrl.match(/(!15s[^?&!]+)/);
         const contextStr = contextMatch ? contextMatch[1] : "";
 
         console.log(`[LinkBuilder] HexID: ${hexPlaceId}, Lat: ${lat}, Lon: ${lon}, Topic: ${topicId}`);
-
         if (hexPlaceId && lat && lon) {
             let cleanBase = finalUrl.split('/data=')[0];
             if (cleanBase.endsWith('/')) cleanBase = cleanBase.slice(0, -1);
-
-            // Build the link with precision coordinates AND the entity ID for locking
+            // Construct a stable review link that embeds the place ID and coordinates
             reviewLink = `${cleanBase}/data=!4m11!3m10!1s${hexPlaceId}!5m2!4m1!1i2!8m2!3d${lat}!4d${lon}!9m1!1b1${contextStr}${topicId}`;
             console.log(`[LinkBuilder] Generated Deep Link: ${reviewLink}`);
         }
 
-        res.json({
+        const responsePayload = {
             name,
             category,
-            placeId: finalUrl,
+            placeId: finalUrl, // Restored map URL to placeId per user request
             logoUrl: logoUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=256`,
-            reviewLink
-        });
-
+            reviewLink,
+            debug: {
+                rawCategoryFromMaps: rawGoogleCategory,
+                finalPlaywrightUrl: finalUrl,
+                pageTitle: pageTitle,
+                geminiTriggered: !!process.env.GEMINI_API_KEY,
+                extractedHexId: hexPlaceId
+            }
+        };
+        console.log("[Playwright Success Payload]:", JSON.stringify(responsePayload, null, 2));
+        res.json(responsePayload);
     } catch (error) {
         console.error('Playwright Error:', error);
-        // LAST RESORT FALLBACK: Use the old regex method if browser fails
+        // Fallback to a lightweight regex‑based scraper if Playwright fails completely
         try {
-            console.log("[Fallback] Browser failed, trying regex scraper...");
+            console.log('[Fallback] Browser failed, trying regex scraper...');
             const { url } = req.query;
             const response = await fetch(url, {
-                method: 'GET', redirect: 'follow',
+                method: 'GET',
+                redirect: 'follow',
                 headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
             });
             const html = await response.text();
@@ -559,11 +586,32 @@ router.get('/expand/metadata', async (req, res) => {
                 const decoded = decodeURIComponent(finalUrl);
                 name = decoded.match(/\/place\/([^\/|@|?]+)/)?.[1]?.replace(/[-+]/g, ' ')?.split(',')[0]?.trim() || "Business Name";
             }
-            res.json({
-                name, category: "Restaurant", placeId: url,
-                logoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
-                reviewLink: finalUrl
-            });
+            
+            let hexPlaceId = finalUrl.match(/1s(0x[a-fA-F0-9]+:0x[a-fA-F0-9]+)/)?.[1];
+
+            // Guess category from name in fallback
+            let category = "Other";
+            const lowerName = name.toLowerCase();
+            if (lowerName.includes('salon') || lowerName.includes('spa') || lowerName.includes('beauty')) category = "Salon & Spa";
+            else if (lowerName.includes('restaurant') || lowerName.includes('cafe')) category = "Restaurant";
+            else if (lowerName.includes('clinic') || lowerName.includes('hospital')) category = "Medical";
+            else if (lowerName.includes('hotel') || lowerName.includes('resort')) category = "Hotel";
+            else if (lowerName.includes('store') || lowerName.includes('shop')) category = "Retail";
+
+            const fallbackPayload = {
+                name,
+                category,
+                placeId: finalUrl, // Use URL per user request
+                logoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=256`,
+                reviewLink: finalUrl,
+                debug: {
+                    fallbackTriggered: true,
+                    finalPlaywrightUrl: finalUrl,
+                    extractedHexId: hexPlaceId
+                }
+            };
+            console.log("[Fallback Success Payload]:", JSON.stringify(fallbackPayload, null, 2));
+            res.json(fallbackPayload);
         } catch (fallbackError) {
             res.status(500).json({ error: 'Failed to expand URL' });
         }
