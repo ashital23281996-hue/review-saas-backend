@@ -460,6 +460,31 @@ function normalizeGoogleUrl(urlStr) {
 }
 
 /**
+ * Helper to reconstruct coordinate-based Google Maps review links
+ */
+function reconstructCoordinateLink(finalUrl, hexPlaceId) {
+    if (!finalUrl) return finalUrl;
+    const bizLat = finalUrl.match(/!3d(-?\d+\.\d+)/)?.[1];
+    const bizLon = finalUrl.match(/!4d(-?\d+\.\d+)/)?.[1];
+    const coordsMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    const lat = bizLat || coordsMatch?.[1];
+    const lon = bizLon || coordsMatch?.[2];
+    const topicIdMatch = finalUrl.match(/(!16s[^?&!]+)/);
+    const topicId = topicIdMatch ? topicIdMatch[1] : "";
+    const contextMatch = finalUrl.match(/(!15s[^?&!]+)/);
+    const contextStr = contextMatch ? contextMatch[1] : "";
+
+    console.log(`[LinkBuilder] HexID: ${hexPlaceId}, Lat: ${lat}, Lon: ${lon}, Topic: ${topicId}`);
+    if (hexPlaceId && lat && lon) {
+        let cleanBase = finalUrl.split('/data=')[0];
+        if (cleanBase.endsWith('/')) cleanBase = cleanBase.slice(0, -1);
+        // Construct a stable review link that embeds the place ID and coordinates
+        return `${cleanBase}/data=!4m11!3m10!1s${hexPlaceId}!5m2!4m1!1i2!8m2!3d${lat}!4d${lon}!9m1!1b1${contextStr}${topicId}`;
+    }
+    return finalUrl;
+}
+
+/**
  * Robust Playwright-based Scraper
  */
 router.get('/expand/metadata', async (req, res) => {
@@ -584,24 +609,8 @@ Return ONLY a raw JSON object:
             reviewLink = finalUrl;
             console.log(`[LinkBuilder] Preserving expanded direct review link: ${reviewLink}`);
         } else {
-            const bizLat = finalUrl.match(/!3d(-?\d+\.\d+)/)?.[1];
-            const bizLon = finalUrl.match(/!4d(-?\d+\.\d+)/)?.[1];
-            const coordsMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-            const lat = bizLat || coordsMatch?.[1];
-            const lon = bizLon || coordsMatch?.[2];
-            const topicIdMatch = finalUrl.match(/(!16s[^?&!]+)/);
-            const topicId = topicIdMatch ? topicIdMatch[1] : "";
-            const contextMatch = finalUrl.match(/(!15s[^?&!]+)/);
-            const contextStr = contextMatch ? contextMatch[1] : "";
-
-            console.log(`[LinkBuilder] HexID: ${hexPlaceId}, Lat: ${lat}, Lon: ${lon}, Topic: ${topicId}`);
-            if (hexPlaceId && lat && lon) {
-                let cleanBase = finalUrl.split('/data=')[0];
-                if (cleanBase.endsWith('/')) cleanBase = cleanBase.slice(0, -1);
-                // Construct a stable review link that embeds the place ID and coordinates
-                reviewLink = `${cleanBase}/data=!4m11!3m10!1s${hexPlaceId}!5m2!4m1!1i2!8m2!3d${lat}!4d${lon}!9m1!1b1${contextStr}${topicId}`;
-                console.log(`[LinkBuilder] Generated Deep Link: ${reviewLink}`);
-            }
+            reviewLink = reconstructCoordinateLink(finalUrl, hexPlaceId);
+            console.log(`[LinkBuilder] Reconstructed review link: ${reviewLink}`);
         }
 
         const responsePayload = {
@@ -661,6 +670,9 @@ Return ONLY a raw JSON object:
             } else if (isDirectReviewLink(finalUrl)) {
                 reviewLink = finalUrl;
                 console.log(`[Fallback] Preserving expanded direct review link: ${reviewLink}`);
+            } else {
+                reviewLink = reconstructCoordinateLink(finalUrl, hexPlaceId);
+                console.log(`[Fallback] Reconstructed review link: ${reviewLink}`);
             }
 
             const fallbackPayload = {
