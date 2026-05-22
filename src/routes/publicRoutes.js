@@ -75,23 +75,27 @@ router.get('/discovery/:shortCode', async (req, res) => {
         // 2. Fetch tags for this category (with Multi-Level Fallback from Cache)
         console.time('InMemory Tag Filter');
         const cachedTags = await getCachedTags();
-        let allTags = cachedTags.filter(t => t.category === business.category && t.language === lang);
+        const bizCategory = (business.category || '').trim().toLowerCase();
         
-        // FALLBACK 1: If no tags for specific category in this language, try "General" in this language
-        if (allTags.length === 0) {
-            console.log(`[Discovery Cache] No tags for ${business.category} in ${lang}, trying General...`);
-            allTags = cachedTags.filter(t => t.category === 'General' && t.language === lang);
+        // Step 1: Case-insensitive match for category + requested language
+        let allTags = cachedTags.filter(t => t.category.trim().toLowerCase() === bizCategory && t.language === lang);
+        
+        // Step 2: Fallback: Case-insensitive match for category + English
+        if (allTags.length === 0 && lang !== 'English') {
+            console.log(`[Discovery Cache] No tags for ${business.category} in ${lang}, trying English...`);
+            allTags = cachedTags.filter(t => t.category.trim().toLowerCase() === bizCategory && t.language === 'English');
         }
 
-        // FALLBACK 2: If STILL no tags (language not seeded), fallback to English for the tags themselves
-        if (allTags.length === 0 && lang !== 'English') {
-            console.log(`[Discovery Cache] No tags for ${lang} found. Falling back to English tags.`);
-            allTags = cachedTags.filter(t => t.category === business.category && t.language === 'English');
+        // Step 3: Fallback: "Professional" in requested language
+        if (allTags.length === 0) {
+            console.log(`[Discovery Cache] No tags for ${business.category}, falling back to Professional in ${lang}...`);
+            allTags = cachedTags.filter(t => t.category.trim().toLowerCase() === 'professional' && t.language === lang);
+        }
 
-            // Final safety: General English
-            if (allTags.length === 0) {
-                allTags = cachedTags.filter(t => t.category === 'General' && t.language === 'English');
-            }
+        // Step 4: Fallback: "Professional" in English
+        if (allTags.length === 0) {
+            console.log(`[Discovery Cache] Fallback to Professional in English...`);
+            allTags = cachedTags.filter(t => t.category.trim().toLowerCase() === 'professional' && t.language === 'English');
         }
         console.timeEnd('InMemory Tag Filter');
 
@@ -140,29 +144,26 @@ router.get('/tags/:shortCode', async (req, res) => {
         });
         if (!business) return res.status(404).json({ error: 'Business not found' });
 
-        // 1. Query predefined tags from the IndustryTag table based on category and language
-        let category = business.category || 'Other';
-        let dbTags = await prisma.industryTag.findMany({
-            where: { category, language: lang }
-        });
+        // 1. Fetch tags using in-memory cache helper with robust fallbacks
+        const cachedTags = await getCachedTags();
+        const bizCategory = (business.category || '').trim().toLowerCase();
 
-        // 2. Fallback to 'Other' with requested language
-        if (dbTags.length === 0) {
-            dbTags = await prisma.industryTag.findMany({
-                where: { category: 'Other', language: lang }
-            });
+        // Step 1: Case-insensitive match for category + requested language
+        let dbTags = cachedTags.filter(t => t.category.trim().toLowerCase() === bizCategory && t.language === lang);
+
+        // Step 2: Fallback: Case-insensitive match for category + English
+        if (dbTags.length === 0 && lang !== 'English') {
+            dbTags = cachedTags.filter(t => t.category.trim().toLowerCase() === bizCategory && t.language === 'English');
         }
 
-        // 3. Fallback to English if the requested language has no tags at all
+        // Step 3: Fallback: "Professional" in requested language
         if (dbTags.length === 0) {
-            dbTags = await prisma.industryTag.findMany({
-                where: { category, language: 'English' }
-            });
-            if (dbTags.length === 0) {
-                dbTags = await prisma.industryTag.findMany({
-                    where: { category: 'Other', language: 'English' }
-                });
-            }
+            dbTags = cachedTags.filter(t => t.category.trim().toLowerCase() === 'professional' && t.language === lang);
+        }
+
+        // Step 4: Fallback: "Professional" in English
+        if (dbTags.length === 0) {
+            dbTags = cachedTags.filter(t => t.category.trim().toLowerCase() === 'professional' && t.language === 'English');
         }
 
         // Format tags to match the expected frontend structure { id, label, icon }
