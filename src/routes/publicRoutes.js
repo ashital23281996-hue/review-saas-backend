@@ -418,6 +418,48 @@ async function callGemini(apiKey, prompt, temperature = 0.7, schema = null) {
 }
 
 /**
+ * Helper to check if a URL is a direct Google write review link
+ */
+function isDirectReviewLink(urlStr) {
+    if (!urlStr) return false;
+    const lower = urlStr.toLowerCase();
+    return lower.includes('writereview') || 
+           lower.includes('g.page/r/') || 
+           lower.includes('/review') || 
+           lower.includes('!9m1!1b1');
+}
+
+/**
+ * Helper to normalize g.page/r/ GMB URLs by appending /review if missing
+ */
+function normalizeGoogleUrl(urlStr) {
+    if (!urlStr) return urlStr;
+    if (urlStr.includes('g.page/r/')) {
+        try {
+            const parsed = new URL(urlStr);
+            let pathname = parsed.pathname;
+            if (pathname.endsWith('/')) {
+                pathname = pathname.slice(0, -1);
+            }
+            if (!pathname.endsWith('/review')) {
+                parsed.pathname = pathname + '/review';
+            }
+            return parsed.toString();
+        } catch (e) {
+            let clean = urlStr.split('?')[0].split('#')[0];
+            if (clean.endsWith('/')) {
+                clean = clean.slice(0, -1);
+            }
+            if (!clean.endsWith('/review')) {
+                return clean + '/review';
+            }
+            return urlStr;
+        }
+    }
+    return urlStr;
+}
+
+/**
  * Robust Playwright-based Scraper
  */
 router.get('/expand/metadata', async (req, res) => {
@@ -425,6 +467,9 @@ router.get('/expand/metadata', async (req, res) => {
     let browser;
 
     try {
+        if (!url) return res.status(400).json({ error: 'URL is required' });
+        const targetUrl = normalizeGoogleUrl(url);
+
         // ---------------------------------------------------------------------
         // When running on Render, force Playwright to use the persistent cache directory
         // This prevents "browser not found" errors on deployment while keeping local dev safe.
@@ -434,7 +479,6 @@ router.get('/expand/metadata', async (req, res) => {
         }
 
         const { chromium } = await import('playwright');
-        if (!url) return res.status(400).json({ error: 'URL is required' });
 
         browser = await chromium.launch({ headless: true });
         const context = await browser.newContext({
@@ -442,8 +486,8 @@ router.get('/expand/metadata', async (req, res) => {
         });
         const page = await context.newPage();
 
-        // console.log(`[Playwright] Navigating to: ${url}`);
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        // console.log(`[Playwright] Navigating to: ${targetUrl}`);
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
         // Wait for the URL to expand from the short link to the full maps.google.com link
         await page.waitForURL(u => u.href.includes('google.com/maps'), { timeout: 15000 }).catch(() => {
@@ -533,23 +577,31 @@ Return ONLY a raw JSON object:
         // Build a deep‑link that includes coordinates and the place ID
         // ---------------------------------------------------------------------
         let reviewLink = finalUrl;
-        const bizLat = finalUrl.match(/!3d(-?\d+\.\d+)/)?.[1];
-        const bizLon = finalUrl.match(/!4d(-?\d+\.\d+)/)?.[1];
-        const coordsMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-        const lat = bizLat || coordsMatch?.[1];
-        const lon = bizLon || coordsMatch?.[2];
-        const topicIdMatch = finalUrl.match(/(!16s[^?&!]+)/);
-        const topicId = topicIdMatch ? topicIdMatch[1] : "";
-        const contextMatch = finalUrl.match(/(!15s[^?&!]+)/);
-        const contextStr = contextMatch ? contextMatch[1] : "";
+        if (isDirectReviewLink(targetUrl)) {
+            reviewLink = targetUrl;
+            console.log(`[LinkBuilder] Preserving input direct review link: ${reviewLink}`);
+        } else if (isDirectReviewLink(finalUrl)) {
+            reviewLink = finalUrl;
+            console.log(`[LinkBuilder] Preserving expanded direct review link: ${reviewLink}`);
+        } else {
+            const bizLat = finalUrl.match(/!3d(-?\d+\.\d+)/)?.[1];
+            const bizLon = finalUrl.match(/!4d(-?\d+\.\d+)/)?.[1];
+            const coordsMatch = finalUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+            const lat = bizLat || coordsMatch?.[1];
+            const lon = bizLon || coordsMatch?.[2];
+            const topicIdMatch = finalUrl.match(/(!16s[^?&!]+)/);
+            const topicId = topicIdMatch ? topicIdMatch[1] : "";
+            const contextMatch = finalUrl.match(/(!15s[^?&!]+)/);
+            const contextStr = contextMatch ? contextMatch[1] : "";
 
-        console.log(`[LinkBuilder] HexID: ${hexPlaceId}, Lat: ${lat}, Lon: ${lon}, Topic: ${topicId}`);
-        if (hexPlaceId && lat && lon) {
-            let cleanBase = finalUrl.split('/data=')[0];
-            if (cleanBase.endsWith('/')) cleanBase = cleanBase.slice(0, -1);
-            // Construct a stable review link that embeds the place ID and coordinates
-            reviewLink = `${cleanBase}/data=!4m11!3m10!1s${hexPlaceId}!5m2!4m1!1i2!8m2!3d${lat}!4d${lon}!9m1!1b1${contextStr}${topicId}`;
-            console.log(`[LinkBuilder] Generated Deep Link: ${reviewLink}`);
+            console.log(`[LinkBuilder] HexID: ${hexPlaceId}, Lat: ${lat}, Lon: ${lon}, Topic: ${topicId}`);
+            if (hexPlaceId && lat && lon) {
+                let cleanBase = finalUrl.split('/data=')[0];
+                if (cleanBase.endsWith('/')) cleanBase = cleanBase.slice(0, -1);
+                // Construct a stable review link that embeds the place ID and coordinates
+                reviewLink = `${cleanBase}/data=!4m11!3m10!1s${hexPlaceId}!5m2!4m1!1i2!8m2!3d${lat}!4d${lon}!9m1!1b1${contextStr}${topicId}`;
+                console.log(`[LinkBuilder] Generated Deep Link: ${reviewLink}`);
+            }
         }
 
         const responsePayload = {
@@ -574,7 +626,11 @@ Return ONLY a raw JSON object:
         try {
             console.log('[Fallback] Browser failed, trying regex scraper...');
             const { url } = req.query;
-            const response = await fetch(url, {
+            let targetUrl = url;
+            if (targetUrl) {
+                targetUrl = normalizeGoogleUrl(targetUrl);
+            }
+            const response = await fetch(targetUrl, {
                 method: 'GET',
                 redirect: 'follow',
                 headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
@@ -598,12 +654,21 @@ Return ONLY a raw JSON object:
             else if (lowerName.includes('hotel') || lowerName.includes('resort')) category = "Hotel";
             else if (lowerName.includes('store') || lowerName.includes('shop')) category = "Retail";
 
+            let reviewLink = finalUrl;
+            if (isDirectReviewLink(targetUrl)) {
+                reviewLink = targetUrl;
+                console.log(`[Fallback] Preserving input direct review link: ${reviewLink}`);
+            } else if (isDirectReviewLink(finalUrl)) {
+                reviewLink = finalUrl;
+                console.log(`[Fallback] Preserving expanded direct review link: ${reviewLink}`);
+            }
+
             const fallbackPayload = {
                 name,
                 category,
                 placeId: finalUrl, // Use URL per user request
                 logoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&size=256`,
-                reviewLink: finalUrl,
+                reviewLink,
                 debug: {
                     fallbackTriggered: true,
                     finalPlaywrightUrl: finalUrl,
